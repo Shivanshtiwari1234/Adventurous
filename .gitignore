@@ -1,1 +1,3 @@
-run.bat
+*.bat
+out/
+lib/
