@@ -1,4 +1,3 @@
-import org.lwjgl.glfw.*;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.stb.STBImage;
 import org.lwjgl.system.MemoryStack;
@@ -14,16 +13,25 @@ import static org.lwjgl.system.MemoryUtil.NULL;
 
 public class Adventurous {
 
+    /* ===================== WINDOW ===================== */
     private long window;
-    private int width = 800, height = 600;
+    private int width = 1280, height = 720;
     private boolean paused = false;
 
+    /* ===================== CAMERA ===================== */
+    private volatile float camX = 0f;
+    private volatile float camY = 3f;
+    private volatile float camZ = -6f;
+    private final float camSpeed = 0.08f;
+
+    /* ===================== WORLD ===================== */
+    private static float screenOffsetX, screenOffsetY;
     private final CopyOnWriteArrayList<IsoCube> cubes = new CopyOnWriteArrayList<>();
 
-    private static float screenOffsetX, screenOffsetY;
-
+    /* ===================== TEXTURES ===================== */
     private int grassTexture;
 
+    /* ===================== MAIN ===================== */
     public static void main(String[] args) {
         new Adventurous().run();
     }
@@ -31,207 +39,174 @@ public class Adventurous {
     private void run() {
         init();
         startThreads();
-        loop();
+        renderLoop();
         cleanup();
     }
 
+    /* ===================== INIT ===================== */
     private void init() {
         if (!glfwInit()) throw new IllegalStateException("GLFW init failed");
 
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
 
-        window = glfwCreateWindow(width, height, "Adventurous Isometric XYZ", NULL, NULL);
-        if (window == NULL) throw new RuntimeException("Failed to create window");
+        window = glfwCreateWindow(width, height, "Adventurous", NULL, NULL);
+        if (window == NULL) throw new RuntimeException("Window creation failed");
 
         glfwMakeContextCurrent(window);
         glfwSwapInterval(1);
         GL.createCapabilities();
         glfwShowWindow(window);
 
-        int[] fbWidth = new int[1], fbHeight = new int[1];
-        glfwGetFramebufferSize(window, fbWidth, fbHeight);
-        width = fbWidth[0];
-        height = fbHeight[0];
+        int[] w = new int[1], h = new int[1];
+        glfwGetFramebufferSize(window, w, h);
+        width = w[0];
+        height = h[0];
 
-        setup2D(width, height);
+        setup2D();
         updateScreenOffset();
 
         glEnable(GL_TEXTURE_2D);
-        grassTexture = loadTexture("grassblock.png");
+        grassTexture = loadTexture("textures\\grassblock.png");
 
-        createInitialCubes();
+        createWorld();
 
-        // Callbacks
-        glfwSetFramebufferSizeCallback(window, (win, w, h) -> {
-            if (w > 0 && h > 0) {
-                width = w; height = h;
-                glViewport(0, 0, width, height);
-                setup2D(width, height);
-                updateScreenOffset();
-                cubes.forEach(IsoCube::updateScreenPos);
-            }
+        glfwSetFramebufferSizeCallback(window, (win, nw, nh) -> {
+            width = nw;
+            height = nh;
+            glViewport(0, 0, width, height);
+            setup2D();
+            updateScreenOffset();
         });
 
-        glfwSetKeyCallback(window, (win, key, scancode, action, mods) -> {
+        glfwSetKeyCallback(window, (win, key, sc, action, mods) -> {
             if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
                 paused = !paused;
-                glfwSetInputMode(window, GLFW_CURSOR, paused ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_HIDDEN);
-                if (!paused) centerCursor();
+                glfwSetInputMode(window, GLFW_CURSOR,
+                        paused ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_HIDDEN);
             }
         });
 
         glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
-            if (!paused && action == GLFW_PRESS) {
-                IsoCube selected = getSelectedCube();
-                if (selected == null) return;
-                if (button == GLFW_MOUSE_BUTTON_LEFT) removeCube(selected);
-                else if (button == GLFW_MOUSE_BUTTON_RIGHT)
-                    addCube(selected.x, selected.y + 1, selected.z);
+            if (paused || action != GLFW_PRESS) return;
+            IsoCube sel = getSelectedCube();
+            if (sel == null) return;
+
+            if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                cubes.remove(sel);
+            } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+                cubes.add(new IsoCube(sel.x, sel.y + 1, sel.z, sel.size, grassTexture));
             }
         });
 
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
-        centerCursor();
     }
 
+    /* ===================== THREADS ===================== */
     private void startThreads() {
-        // Thread 1: Game logic updates
-        Thread logicThread = new Thread(() -> {
+
+        // LOGIC THREAD
+        new Thread(() -> {
             while (!glfwWindowShouldClose(window)) {
-                if (!paused) {
-                    // Future logic here (movement, block updates)
-                }
-                try { Thread.sleep(5); } catch (InterruptedException ignored) {}
+                if (!paused) handleCameraMovement();
+                sleep(5);
             }
-        }, "GameLogicThread");
-        logicThread.setDaemon(true);
-        logicThread.start();
+        }, "LogicThread").start();
 
-        // Thread 2: Background computations
-        Thread asyncThread = new Thread(() -> {
+        // ASYNC THREAD (future gen/AI)
+        new Thread(() -> {
             while (!glfwWindowShouldClose(window)) {
-                if (!paused) {
-                    // Heavy calculations, AI, procedural generation, etc.
-                }
-                try { Thread.sleep(10); } catch (InterruptedException ignored) {}
+                sleep(20);
             }
-        }, "AsyncComputationThread");
-        asyncThread.setDaemon(true);
-        asyncThread.start();
+        }, "AsyncThread").start();
 
-        // Thread 3: Future networking / additional updates
-        Thread networkThread = new Thread(() -> {
+        // NETWORK / FUTURE
+        new Thread(() -> {
             while (!glfwWindowShouldClose(window)) {
-                // Placeholder for multiplayer / network sync
-                try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+                sleep(50);
             }
-        }, "NetworkThread");
-        networkThread.setDaemon(true);
-        networkThread.start();
+        }, "NetThread").start();
     }
 
-    private void updateScreenOffset() {
-        screenOffsetX = width / 2f;
-        screenOffsetY = height / 2f;
+    /* ===================== CAMERA ===================== */
+    private void handleCameraMovement() {
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) camZ += camSpeed;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) camZ -= camSpeed;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camX -= camSpeed;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camX += camSpeed;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) camY -= camSpeed;
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) camY += camSpeed;
     }
 
-    private void centerCursor() {
-        glfwSetCursorPos(window, width / 2.0, height / 2.0);
-    }
-
-    private void setup2D(int w, int h) {
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glOrtho(0, w, h, 0, -1, 1);
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-    }
-
-    private void createInitialCubes() {
-        int size = Math.min(width, height) / 8;
-        cubes.add(new IsoCube(0, 0, 0, size, grassTexture));
-        cubes.add(new IsoCube(1, 0, 0, size, grassTexture));
-        cubes.add(new IsoCube(0, 0, 1, size, grassTexture));
-        cubes.add(new IsoCube(1, 0, 1, size, grassTexture));
-        cubes.forEach(IsoCube::updateScreenPos);
-    }
-
-    private void loop() {
+    /* ===================== RENDER LOOP ===================== */
+    private void renderLoop() {
         while (!glfwWindowShouldClose(window)) {
             glClear(GL_COLOR_BUFFER_BIT);
 
-            // Draw sky
-            glDisable(GL_TEXTURE_2D);
-            glColor3f(0.53f, 0.81f, 0.92f);
-            glBegin(GL_QUADS);
-            glVertex2f(0, 0);
-            glVertex2f(width, 0);
-            glVertex2f(width, height);
-            glVertex2f(0, height);
-            glEnd();
-            glEnable(GL_TEXTURE_2D);
+            drawSky();
 
-            // Draw cubes (sorted for correct overlap)
+            cubes.forEach(c -> c.updateScreenPos(camX, camY, camZ));
             cubes.sort(Comparator.comparingInt(c -> c.x + c.y + c.z));
-            IsoCube selectedCube = !paused ? getSelectedCube() : null;
-            cubes.forEach(cube -> {
-                cube.draw();
-                if (cube == selectedCube) cube.drawOutline();
-            });
 
-            // Cursor & hand
-            glDisable(GL_TEXTURE_2D);
-            if (!paused) drawCursor();
+            IsoCube selected = paused ? null : getSelectedCube();
+
+            for (IsoCube c : cubes) {
+                c.draw();
+                if (c == selected) c.drawOutline();
+            }
+
+            drawCrosshair();
             drawHand();
-            glEnable(GL_TEXTURE_2D);
 
-            // Pause overlay
             if (paused) drawPauseOverlay();
 
             glfwSwapBuffers(window);
             glfwPollEvents();
-
-            if (!paused) centerCursor();
         }
     }
 
-    private void drawCursor() {
-        float cx = width / 2f, cy = height / 2f, size = 10f;
-        glColor3f(1f, 1f, 1f);
-        glBegin(GL_LINES);
-        glVertex2f(cx - size, cy);
-        glVertex2f(cx + size, cy);
-        glVertex2f(cx, cy - size);
-        glVertex2f(cx, cy + size);
+    /* ===================== DRAWING ===================== */
+    private void drawSky() {
+        glDisable(GL_TEXTURE_2D);
+        glColor3f(0.52f, 0.80f, 0.92f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0);
+        glVertex2f(width, 0);
+        glVertex2f(width, height);
+        glVertex2f(0, height);
         glEnd();
+        glEnable(GL_TEXTURE_2D);
+    }
+
+    private void drawCrosshair() {
+        if (paused) return;
+        float cx = width / 2f, cy = height / 2f;
+        glDisable(GL_TEXTURE_2D);
+        glColor3f(1, 1, 1);
+        glBegin(GL_LINES);
+        glVertex2f(cx - 8, cy); glVertex2f(cx + 8, cy);
+        glVertex2f(cx, cy - 8); glVertex2f(cx, cy + 8);
+        glEnd();
+        glEnable(GL_TEXTURE_2D);
     }
 
     private void drawHand() {
-        float handW = 40, handH = 40, armW = 15, armH = 50;
-        float x = width - handW - 20, y = height - handH - 20;
-
+        glDisable(GL_TEXTURE_2D);
         glColor3f(0.9f, 0.7f, 0.5f);
         glBegin(GL_QUADS);
-        glVertex2f(x + handW - armW, y - armH);
-        glVertex2f(x + handW, y - armH);
-        glVertex2f(x + handW, y);
-        glVertex2f(x + handW - armW, y);
+        glVertex2f(width - 90, height - 40);
+        glVertex2f(width - 40, height - 40);
+        glVertex2f(width - 40, height);
+        glVertex2f(width - 90, height);
         glEnd();
-
-        glBegin(GL_QUADS);
-        glVertex2f(x, y - handH);
-        glVertex2f(x + handW, y - handH);
-        glVertex2f(x + handW, y);
-        glVertex2f(x, y);
-        glEnd();
+        glEnable(GL_TEXTURE_2D);
     }
 
     private void drawPauseOverlay() {
         glDisable(GL_TEXTURE_2D);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(0f, 0f, 0f, 0.5f);
+        glColor4f(0, 0, 0, 0.5f);
         glBegin(GL_QUADS);
         glVertex2f(0, 0);
         glVertex2f(width, 0);
@@ -242,116 +217,135 @@ public class Adventurous {
         glEnable(GL_TEXTURE_2D);
     }
 
+    /* ===================== SELECTION ===================== */
     private IsoCube getSelectedCube() {
         float cx = width / 2f, cy = height / 2f;
         IsoCube best = null;
         double bestDist = Double.MAX_VALUE;
-        for (IsoCube cube : cubes) {
-            if (cube.isOverlapping(cx, cy)) {
-                double dist = cube.distanceTo(cx, cy);
-                if (dist < bestDist || (dist == bestDist && cube.x > best.x)) {
-                    best = cube;
-                    bestDist = dist;
+
+        for (IsoCube c : cubes) {
+            if (c.contains(cx, cy)) {
+                double d = c.distanceTo(cx, cy);
+                if (d < bestDist) {
+                    best = c;
+                    bestDist = d;
                 }
             }
         }
         return best;
     }
 
-    private void removeCube(IsoCube cube) { cubes.remove(cube); }
-
-    private void addCube(int x, int y, int z) {
-        int size = Math.min(width, height) / 8;
-        IsoCube newCube = new IsoCube(x, y, z, size, grassTexture);
-        newCube.updateScreenPos();
-        cubes.add(newCube);
+    /* ===================== WORLD ===================== */
+    private void createWorld() {
+        int size = 64;
+        cubes.add(new IsoCube(0, 0, 0, size, grassTexture));
+        cubes.add(new IsoCube(1, 0, 0, size, grassTexture));
+        cubes.add(new IsoCube(0, 0, 1, size, grassTexture));
     }
 
+    /* ===================== ISO CUBE ===================== */
     static class IsoCube {
-        int x, y, z, size;
-        float screenX, screenY, halfW, halfH;
-        float[] topFace, leftFace, rightFace;
-        int texture;
+        int x, y, z, size, tex;
+        float sx, sy, hw, hh;
+        float[] top, left, right;
 
-        public IsoCube(int x, int y, int z, int size, int texture) {
-            this.x = x; this.y = y; this.z = z; this.size = size; this.texture = texture;
-            halfW = size/2f; halfH = size/4f;
+        IsoCube(int x, int y, int z, int size, int tex) {
+            this.x = x; this.y = y; this.z = z;
+            this.size = size;
+            this.tex = tex;
         }
 
-        public void updateScreenPos() {
-            halfW = size / 2f;
-            halfH = size / 4f;
-            screenX = (x - z) * halfW + screenOffsetX;
-            screenY = (x + z) * halfH - y * size / 2f + screenOffsetY;
-            updateFaces();
+        void updateScreenPos(float cx, float cy, float cz) {
+            hw = size / 2f;
+            hh = size / 4f;
+
+            float rx = x - cx;
+            float ry = y - cy;
+            float rz = z - cz;
+
+            sx = (rx - rz) * hw + screenOffsetX;
+            sy = (rx + rz) * hh - ry * hh + screenOffsetY;
+
+            top = new float[]{sx, sy - hh, sx + hw, sy, sx, sy + hh, sx - hw, sy};
+            left = new float[]{sx - hw, sy, sx, sy + hh, sx, sy + hh + size / 2f, sx - hw, sy + size / 2f};
+            right = new float[]{sx + hw, sy, sx, sy + hh, sx, sy + hh + size / 2f, sx + hw, sy + size / 2f};
         }
 
-        private void updateFaces() {
-            topFace = new float[]{screenX, screenY-halfH, screenX+halfW, screenY,
-                                  screenX, screenY+halfH, screenX-halfW, screenY};
-            leftFace = new float[]{screenX-halfW, screenY, screenX, screenY+halfH,
-                                   screenX, screenY+halfH+size/2f, screenX-halfW, screenY+size/2f};
-            rightFace = new float[]{screenX+halfW, screenY, screenX, screenY+halfH,
-                                    screenX, screenY+halfH+size/2f, screenX+halfW, screenY+size/2f};
+        void draw() {
+            glBindTexture(GL_TEXTURE_2D, tex);
+            drawFace(top);
+            drawFace(left);
+            drawFace(right);
         }
 
-        public void draw() {
-            glBindTexture(GL_TEXTURE_2D, texture);
-            drawQuad(topFace);
-            drawQuad(leftFace);
-            drawQuad(rightFace);
+        void drawOutline() {
+            glDisable(GL_TEXTURE_2D);
+            glColor3f(1, 1, 0);
+            drawLine(top);
+            drawLine(left);
+            drawLine(right);
+            glEnable(GL_TEXTURE_2D);
         }
 
-        private void drawQuad(float[] face) {
+        boolean contains(float px, float py) {
+            return px > sx - hw && px < sx + hw && py > sy - hh && py < sy + size;
+        }
+
+        double distanceTo(float px, float py) {
+            return Math.hypot(px - sx, py - sy);
+        }
+
+        private void drawFace(float[] f) {
             glBegin(GL_QUADS);
-            glTexCoord2f(0,0); glVertex2f(face[0], face[1]);
-            glTexCoord2f(1,0); glVertex2f(face[2], face[3]);
-            glTexCoord2f(1,1); glVertex2f(face[4], face[5]);
-            glTexCoord2f(0,1); glVertex2f(face[6], face[7]);
+            glTexCoord2f(0,0); glVertex2f(f[0], f[1]);
+            glTexCoord2f(1,0); glVertex2f(f[2], f[3]);
+            glTexCoord2f(1,1); glVertex2f(f[4], f[5]);
+            glTexCoord2f(0,1); glVertex2f(f[6], f[7]);
             glEnd();
         }
 
-        public boolean isOverlapping(float px, float py) {
-            float minX = screenX-halfW, maxX = screenX+halfW;
-            float minY = screenY-halfH, maxY = screenY+halfH+size/2f;
-            return px>=minX && px<=maxX && py>=minY && py<=maxY;
-        }
-
-        public double distanceTo(float px, float py) {
-            return Math.hypot(screenX - px, screenY - py);
-        }
-
-        public void drawOutline() {
-            glColor3f(1f, 1f, 0f);
-            glLineWidth(2f);
-            drawLineLoop(topFace);
-            drawLineLoop(leftFace);
-            drawLineLoop(rightFace);
-            glLineWidth(1f);
-        }
-
-        private void drawLineLoop(float[] face) {
+        private void drawLine(float[] f) {
             glBegin(GL_LINE_LOOP);
-            for (int i=0;i<face.length;i+=2) glVertex2f(face[i], face[i+1]);
+            for (int i = 0; i < 8; i += 2) glVertex2f(f[i], f[i + 1]);
             glEnd();
         }
+    }
+
+    /* ===================== UTILS ===================== */
+    private void setup2D() {
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrtho(0, width, height, 0, -1, 1);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+    }
+
+    private void updateScreenOffset() {
+        screenOffsetX = width / 2f;
+        screenOffsetY = height / 2f;
     }
 
     private int loadTexture(String path) {
-        int texID;
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            IntBuffer w = stack.mallocInt(1), h = stack.mallocInt(1), comp = stack.mallocInt(1);
+            IntBuffer w = stack.mallocInt(1);
+            IntBuffer h = stack.mallocInt(1);
+            IntBuffer c = stack.mallocInt(1);
             STBImage.stbi_set_flip_vertically_on_load(true);
-            ByteBuffer image = STBImage.stbi_load(path, w, h, comp, 4);
-            if (image==null) throw new RuntimeException("Failed to load texture: "+path);
-            texID = glGenTextures();
-            glBindTexture(GL_TEXTURE_2D, texID);
+            ByteBuffer img = STBImage.stbi_load(path, w, h, c, 4);
+            if (img == null) throw new RuntimeException("Texture load failed");
+
+            int id = glGenTextures();
+            glBindTexture(GL_TEXTURE_2D, id);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w.get(),h.get(),0,GL_RGBA,GL_UNSIGNED_BYTE,image);
-            STBImage.stbi_image_free(image);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w.get(), h.get(), 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+            STBImage.stbi_image_free(img);
+            return id;
         }
-        return texID;
+    }
+
+    private void sleep(int ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
     }
 
     private void cleanup() {
